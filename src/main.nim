@@ -66,6 +66,7 @@ type Player = ref object of Object
   jump: bool
   fallThrough: bool
   socket: Socket
+  connectedToInput: bool
   nearestBox: Box
   nearestBoxDist: float
   walkFrame: int
@@ -105,6 +106,8 @@ type AlterBox = ref object of Box
   kind: AlterKind
   inputBuffer0: array[BUFFERSIZE, float32]
   inputBuffer1: array[BUFFERSIZE, float32]
+
+type SplitterBox = ref object of Box
 
 type FilterBox = ref object of Box
   kind: FilterKind
@@ -173,6 +176,8 @@ proc playSound(index: int, channel: int) =
   sfxChannels[channel].pos = 0
 
 proc loadLevel(newlevelId: int)
+proc isSolid(self: Object, ox,oy: int): bool
+proc isSolid(t: uint8): bool
 
 proc newSocket(obj: Object, x,y: int): Socket =
   result = new(Socket)
@@ -286,6 +291,15 @@ method process(self: FilterBox) =
 
   procCall process(Box(self))
 
+method process(self: SplitterBox) =
+  value = 0.0
+  if inputSockets[0].connectedTo != nil:
+    value = inputSockets[0].connectedTo.value
+
+  outputSockets[0].value = value
+  outputSockets[1].value = value
+
+  procCall process(Box(self))
 
 method process(self: AlterBox) =
   var inA: float32 = 0.0
@@ -310,7 +324,6 @@ method process(self: AlterBox) =
     value = -inA
   of akDiv2:
     value = inA / 2.0
-
   procCall process(Box(self))
 
 method process(self: OscBox) =
@@ -336,6 +349,9 @@ proc update(self: Cable, dt: float) =
   let bp = vec2f(b.x.float,b.y.float)
 
   let totalDist = (ap - bp).length
+
+  if totalDist < 1.0:
+    return
 
   const k = 0.2
   const b = 0.5
@@ -374,6 +390,7 @@ proc draw(self: Cable) =
   # shadow
   let offset = vec2f(0.0,1.0)
   setColor(1)
+
   line(a.x, a.y, points[0].pos.x, points[0].pos.y+1)
   line(points[0].pos+offset, points[1].pos+offset)
   line(points[1].pos+offset, points[2].pos+offset)
@@ -492,12 +509,9 @@ method drawOsc(self: TargetBox, x,y,w,h: int) =
     for i in 0..<bucketSize:
       bucketDifference += abs(differenceBuffer[x0 * bucketSize + i])
     if bucketDifference / bucketSize.float > 0.05:
-      pset(x + x0, y+h-1, 6)
+      pset(x + x0, y+h+1, 6)
     else:
-      pset(x + x0, y+h-1, 8)
-
-  if w >= 64:
-    printShadowR("SYNC: " & $(100 - (difference * 100).int) & "%", x + w, y + 2)
+      pset(x + x0, y+h+1, 8)
 
 method draw(self: OscBox) =
   drawOsc(x+2,y+2,12,10)
@@ -508,8 +522,8 @@ method draw(self: TargetBox) =
   procCall draw(Box(self))
 
 method update(self: Box, dt: float) =
-  let dx = self.x.float - player.x.float
-  let dy = self.y.float - player.y.float
+  let dx = (self.x + 8).float - (player.x + 8).float
+  let dy = (self.y + 8).float - (player.y + 8).float
   distanceFromPlayer = sqrt(dx * dx + dy * dy)
 
 method update(self: TargetBox, dt: float) =
@@ -615,8 +629,31 @@ proc newTargetBox(x,y: int): TargetBox =
   result.hitbox.w = 16
   result.hitbox.h = 16
   result.targetInputs = @[]
-  result.inputSockets = @[newSocket(result, x, y + 8)]
+  if not isSolid(mget(x div 16 - 1, y div 16)):
+    result.inputSockets = @[newSocket(result, x, y + 8)]
+  if not isSolid(mget(x div 16, y div 16 - 1)):
+    result.inputSockets = @[newSocket(result, x + 8, y)]
+  if not isSolid(mget(x div 16 + 1, y div 16)):
+    result.inputSockets = @[newSocket(result, x + 16, y + 8)]
+  else:
+    result.inputSockets = @[newSocket(result, x + 8, y + 16)]
   result.outputSockets = @[]
+
+proc newSplitterBox(x,y: int): SplitterBox =
+  result = new(SplitterBox)
+  result.name = "splitter"
+  result.x = x
+  result.y = y
+  result.hitbox.x = 0
+  result.hitbox.y = 0
+  result.hitbox.w = 16
+  result.hitbox.h = 16
+
+  result.inputSockets = @[newSocket(result, x, y + 8)]
+  result.outputSockets = @[
+    newSocket(result, x + 16, y + 5),
+    newSocket(result, x + 16, y + 12)
+  ]
 
 proc newAlterBox(x,y: int, kind: AlterKind): AlterBox =
   result = new(AlterBox)
@@ -653,7 +690,7 @@ proc newFilterBox(x,y: int, kind: FilterKind): FilterBox =
 
 proc isSolid(t: uint8): bool =
   return case t
-  of 1,4,5,11,12,13,14,15,16,17,18,19,20,21,22,23,9,255: true
+  of 1,4,5,11,12,13,14,15,16,17,18,19,20,21,22,23,27,9,255: true
   else: false
 
 proc isPlatform(t: uint8): bool =
@@ -671,7 +708,7 @@ proc isTouchingType(x,y,w,h: int, check: proc(t: uint8): bool): bool =
         return true
   return false
 
-proc isSolid(self: Player, ox,oy: int): bool =
+proc isSolid(self: Object, ox,oy: int): bool =
   isTouchingType(x+hitbox.x+ox, y+hitbox.y+oy, hitbox.w, hitbox.h, isSolid)
 
 proc isTouchingType(self: Player, ox,oy: int, check: proc(t: uint8): bool): bool =
@@ -743,44 +780,69 @@ method update(self: Player, dt: float) =
 
   if btnp(pcB):
     if self.socket.connectedTo == nil:
-      # if holding nothing, attach to nearest box's output socket
+      # if holding nothing, attach to nearest box's socket
       if player.nearestBox != nil and player.nearestBoxDist < 20.0:
           let ob = player.nearestBox
-          if ob.outputSockets.len > 0:
-            if ob.outputSockets[0].connectedTo != nil:
-              disconnect(ob.outputSockets[0])
-            connect(ob.outputSockets[0], self.socket)
-            playSound(SFX_PLUGOUT, 1)
-          elif ob.inputSockets.len > 0:
-            if ob.inputSockets[0].connectedTo != nil:
-              let currentSource = ob.inputSockets[0].connectedTo
-              disconnect(ob.inputSockets[0])
+          # if on right side, check for outputs
+          if player.x + player.hitbox.x >= ob.x + ob.hitbox.w:
+            if ob.outputSockets.len > 0:
+              let s = if ob.outputSockets.len > 1 and btn(pcDown): ob.outputSockets[1] else: ob.outputSockets[0]
+              if s.connectedTo != nil:
+                let currentTarget = s.connectedTo
+                disconnect(s)
+                connect(self.socket, currentTarget)
+                player.connectedToInput = true
+                playSound(SFX_PLUGOUT, 1)
+              else:
+                connect(s, self.socket)
+                player.connectedToInput = false
+                playSound(SFX_PLUGOUT, 1)
+
+          # if on left side, check for inputs
+          elif player.x + player.hitbox.x + player.hitbox.w <= ob.x:
+            let s = if ob.inputSockets.len > 1 and btn(pcDown): ob.inputSockets[1] else: ob.inputSockets[0]
+            if s.connectedTo == nil:
+              # not already connected, connect s to player
+              connect(player.socket, s)
+              player.connectedToInput = true
+              playSound(SFX_PLUGOUT, 1)
+            else:
+              # already connected to something, disconnect this end
+              let currentSource = s.connectedTo
+              disconnect(s)
               connect(currentSource, self.socket)
+              player.connectedToInput = false
               playSound(SFX_PLUGOUT, 1)
     else:
       # if we're holding a cable, connect it to something, or drop it
-      var sourceSocket = self.socket.connectedTo
       for obj in objects:
         if obj of Box:
           let ob = Box(obj)
-          if ob.distanceFromPlayer < 15:
-              # connect it to a filter box
-              if ob.inputSockets.len > 0:
-                if ob.inputSockets.len > 1 and btn(pcDown):
-                    if ob.inputSockets[1].connectedTo != nil:
-                      disconnect(ob.inputSockets[1])
-                    disconnect(sourceSocket, self.socket)
-                    connect(sourceSocket, ob.inputSockets[1])
-                    particles.add(Particle(kind: sparkParticle, pos: vec2f(ob.inputSockets[1].x.float, ob.inputSockets[1].y.float), vel: rndVec(0.5), ttl: 0.1, maxttl: 0.1, above: true))
-                    playSound(SFX_PLUGIN, 1)
-                else:
-                  if ob.inputSockets[0].connectedTo != nil:
-                    disconnect(ob.inputSockets[0])
-                  disconnect(sourceSocket, self.socket)
-                  connect(sourceSocket, ob.inputSockets[0])
-                  particles.add(Particle(kind: sparkParticle, pos: vec2f(ob.inputSockets[0].x.float, ob.inputSockets[0].y.float), vel: rndVec(0.5), ttl: 0.1, maxttl: 0.1, above: true))
-                  playSound(SFX_PLUGIN, 1)
-              break
+          if ob.distanceFromPlayer < 20.0:
+              # connect it to a socket
+              if player.connectedToInput == false and ob.inputSockets.len > 0:
+                var sourceSocket = self.socket.connectedTo
+                let s = if ob.inputSockets.len > 1 and btn(pcDown): ob.inputSockets[1] else: ob.inputSockets[0]
+                if s.connectedTo != nil:
+                  disconnect(s)
+                disconnect(sourceSocket, self.socket)
+                connect(sourceSocket, s)
+                for i in 0..(rnd(5)+1):
+                  particles.add(Particle(kind: sparkParticle, pos: vec2f(s.x.float, s.y.float), vel: rndVec(0.5), ttl: 0.5, maxttl: 0.5, above: true))
+                playSound(SFX_PLUGIN, 1)
+                break
+              # if you're trying to connect an input to an output...
+              if player.connectedToInput and ob.outputSockets.len > 0:
+                var targetSocket = self.socket.connectedTo
+                let s = if ob.outputSockets.len > 1 and btn(pcDown): ob.outputSockets[1] else: ob.outputSockets[0]
+                if s.connectedTo != nil:
+                  disconnect(s)
+                disconnect(self.socket)
+                connect(s, targetSocket)
+                for i in 0..(rnd(5)+1):
+                  particles.add(Particle(kind: sparkParticle, pos: vec2f(s.x.float, s.y.float), vel: rndVec(0.5), ttl: 0.5, maxttl: 0.5, above: true))
+                playSound(SFX_PLUGIN, 1)
+                break
       if self.socket.connectedTo != nil:
         disconnect(self.socket)
 
@@ -827,6 +889,9 @@ proc loadLevel(newlevelId: int) =
   debug "loadLevel", newlevelId
   levelId = newLevelId
   loadMap("map.json")
+
+  if player != nil:
+    disconnect(player.socket)
 
   pauseAudio(1)
   objects = @[]
@@ -939,6 +1004,9 @@ proc loadLevel(newlevelId: int) =
         var ob = newOscBox(x * 16, y * 16, 256.0, oscPulse)
         objects.add(ob)
 
+      of 15:
+        var ob = newSplitterBox(x * 16, y * 16)
+        objects.add(ob)
       of 17:
         var ob = newAlterBox(x * 16, y * 16, akAdd)
         objects.add(ob)
@@ -1022,17 +1090,14 @@ proc loadLevel(newlevelId: int) =
             hiddenObjects.add(hinv)
           of 1:
             var hoscSin4 = newOscBox(0,0, 256.0, oscSine)
-            var hoscTri1 = newOscBox(0,0, 32.0, oscTriangle)
-            var hinv = newAlterBox(0,0, akInvert)
-            var hadd = newAlterBox(0,0, akAdd)
-            connect(hoscSin4.outputSockets[0], hadd.inputSockets[0], false)
-            connect(hoscTri1.outputSockets[0], hinv.inputSockets[0], false)
-            connect(hinv.outputSockets[0], hadd.inputSockets[1], false)
-            connect(hadd.outputSockets[0], ob.targetInputs[0], false)
+            var hoscSqr1 = newOscBox(0,0, 32.0, oscSquare)
+            var hmul = newAlterBox(0,0, akMul)
+            connect(hoscSin4.outputSockets[0], hmul.inputSockets[0], false)
+            connect(hoscSqr1.outputSockets[0], hmul.inputSockets[1], false)
+            connect(hmul.outputSockets[0], ob.targetInputs[0], false)
             hiddenObjects.add(hoscSin4)
-            hiddenObjects.add(hoscTri1)
-            hiddenObjects.add(hadd)
-            hiddenObjects.add(hinv)
+            hiddenObjects.add(hoscSqr1)
+            hiddenObjects.add(hmul)
           else:
             discard
         else:
@@ -1180,18 +1245,23 @@ proc gameDraw() =
         player.nearestBox = box
         player.nearestBoxDist = nearestBoxDist
 
-  if player.nearestBox != nil and nearestBoxDist < 20.0:
+  # highlight the socket on nearest box
+  if frame mod 10 < 5 and player.nearestBox != nil and nearestBoxDist < 20.0:
     setColor(15)
-    if player.socket.connectedTo != nil:
+    if player.x + player.hitbox.x + player.hitbox.w <= player.nearestBox.x:
       if btn(pcDown) and player.nearestBox.inputSockets.len > 1:
         let socket = player.nearestBox.inputSockets[1]
-        rect(socket.x - 2, socket.y - 2, socket.x + 2, socket.y + 2)
+        rectCorners(socket.x - 2, socket.y - 2, socket.x + 2, socket.y + 2)
       elif player.nearestBox.inputSockets.len > 0:
         let socket = player.nearestBox.inputSockets[0]
-        rect(socket.x - 2, socket.y - 2, socket.x + 2, socket.y + 2)
-    else:
-      for socket in player.nearestBox.outputSockets:
-        rect(socket.x - 2, socket.y - 2, socket.x + 2, socket.y + 2)
+        rectCorners(socket.x - 2, socket.y - 2, socket.x + 2, socket.y + 2)
+    elif player.socket.connectedTo == nil and player.x + player.hitbox.x >= player.nearestBox.x + player.nearestBox.hitbox.w:
+      if btn(pcDown) and player.nearestBox.outputSockets.len > 1:
+        let socket = player.nearestBox.outputSockets[1]
+        rectCorners(socket.x - 2, socket.y - 2, socket.x + 2, socket.y + 2)
+      elif player.nearestBox.outputSockets.len > 0:
+        let socket = player.nearestBox.outputSockets[0]
+        rectCorners(socket.x - 2, socket.y - 2, socket.x + 2, socket.y + 2)
 
   if monitor:
     var showTargetOsc = false
@@ -1245,11 +1315,11 @@ proc gameDraw() =
 
   block:
     let edge = (transitionIn * screenWidth.float).int
-    rectfill(edge, 0, screenWidth, screenHeight)
+    rectfill(edge + 1, 0, screenWidth + 1, screenHeight)
     if transitionIn < 1.0:
       transitionIn += 0.02
 
-  rectfill(0, 0, transitionOut * screenWidth.float, screenHeight)
+  rectfill(-1, -1, transitionOut * (screenWidth + 1).float, screenHeight)
 
 proc audioCallback(samples: pointer, nSamples: int) =
   # add in ambience first
