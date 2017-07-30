@@ -55,6 +55,7 @@ type
     toRemove: bool
     a: Socket
     b: Socket
+    points: array[3, tuple[pos: Vec2f, vel: Vec2f]]
 
 type Player = ref object of Object
   xv,yv: float
@@ -71,10 +72,10 @@ type Player = ref object of Object
 
 type OscShape = enum
   oscSine = "sin"
-  oscPulse = "pulse"
+  oscSquare = "square"
   oscTriangle = "tri"
   oscSaw = "saw"
-  oscNoise = "noise"
+  oscPulse = "pulse"
 
 type OscBox = ref object of Box
   freq: float32
@@ -102,6 +103,8 @@ type FilterKind = enum
 
 type AlterBox = ref object of Box
   kind: AlterKind
+  inputBuffer0: array[BUFFERSIZE, float32]
+  inputBuffer1: array[BUFFERSIZE, float32]
 
 type FilterBox = ref object of Box
   kind: FilterKind
@@ -122,6 +125,25 @@ type Particle = object
   maxttl: float
   above: bool
 
+type SfxData = ref object
+  data: seq[float32]
+
+type SfxChannel = object
+  sfx: SfxData
+  pos: int
+
+const
+  SFX_PLUGIN = 0
+  SFX_PLUGOUT = 1
+  SFX_JUMP = 2
+  SFX_LAND = 3
+  SFX_SOLVED = 4
+  SFX_UNSOLVED = 5
+  SFX_DOOROPEN = 6
+  SFX_STEP = 7
+  SFX_MONITORON = 8
+  SFX_MONITOROFF = 9
+
 ## GLOBALS
 
 var frame = 0
@@ -135,14 +157,20 @@ var hiddenObjects: seq[Object]
 var cables: seq[Cable]
 var timerem: int
 var ambience: ptr TSNDFILE
+var monitor: bool
+var transitionIn: float
+var transitionOut: float
+var transition: bool
 
 var particles: Pool[Particle]
-
-var noise: array[4096, float32]
-for i in 0..<noise.len:
-  noise[i] = rnd(2.0) - 1.0
+var sfxLibrary: array[64, SfxData]
+var sfxChannels: array[4, SfxChannel]
 
 ## PROCS
+
+proc playSound(index: int, channel: int) =
+  sfxChannels[channel].sfx = sfxLibrary[index]
+  sfxChannels[channel].pos = 0
 
 proc loadLevel(newlevelId: int)
 
@@ -156,6 +184,13 @@ proc newCable(a: Socket, b: Socket): Cable =
   result = new(Cable)
   result.a = a
   result.b = b
+
+  let ap = vec2f(a.x.float, a.y.float)
+  let bp = vec2f(b.x.float, b.y.float)
+
+  for i in 0..2:
+    result.points[i].pos = lerp(ap,bp, (i+1).float / 5.0)
+    result.points[i].vel = vec2f(0.0, 0.01)
 
 proc connect(insock: Socket, outsock: Socket, cable = true) =
   debug("connect", insock.obj.name, outsock.obj.name)
@@ -258,9 +293,13 @@ method process(self: AlterBox) =
 
   if inputSockets[0].connectedTo != nil:
     inA = inputSockets[0].connectedTo.value
+
   if inputSockets.len > 1:
     if inputSockets[1].connectedTo != nil:
       inB = inputSockets[1].connectedTo.value
+
+  inputBuffer0[writeHead] = inA
+  inputBuffer1[writeHead] = inB
 
   case kind:
   of akAdd:
@@ -277,24 +316,75 @@ method process(self: AlterBox) =
 method process(self: OscBox) =
   case shape:
   of oscSine:
-    value = sin(phase) * 0.5
-  of oscPulse:
-    value = if phase < pulseWidth: -0.5 else: 0.5
+    value = sin(phase)
+  of oscSquare:
+    value = if phase < PI: -1.0 else: 1.0
   of oscTriangle:
     value = abs(phase / TAU * 2.0 - 1.0) * 2.0 - 1.0
   of oscSaw:
-    value = ((phase - PI) / PI) * 0.5
-  of oscNoise:
-    value = rnd(1.0)-0.5
+    value = ((phase - PI) / PI)
+  of oscPulse:
+    value = if phase < TAU * 0.125: -1.0 else: 1.0
 
   phase += freq * invSampleRate * TAU
   phase = phase mod TAU
 
   procCall process(Box(self))
 
-proc draw(self: Cable) =
-  setColor(8)
+proc update(self: Cable, dt: float) =
+  let ap = vec2f(a.x.float,a.y.float)
+  let bp = vec2f(b.x.float,b.y.float)
+
+  let totalDist = (ap - bp).length
+
+  const k = 0.2
+  const b = 0.5
+
+  for i in 0..2:
+
+    var startPos: Vec2f
+    var endPos: Vec2f
+
+    if i == 0:
+      startPos = ap
+    else:
+      startPos = points[i-1].pos
+
+    if i == 2:
+      endPos = bp
+    else:
+      endPos = points[i+1].pos
+
+    var force = vec2f(0.0,0.15)
+    # spring towards start and end
+    let adiff = (points[i].pos - startPos)
+    let ad = adiff.length
+    let bdiff = (points[i].pos - endPos)
+    let bd = bdiff.length
+    force += -k * (ad - totalDist / 5.0) * adiff.normalize() - b * points[i].vel
+    force += -k * (bd - totalDist / 5.0) * bdiff.normalize() - b * points[i].vel
+    points[i].vel += force
+
+    points[i].pos += points[i].vel
+
+proc line(a,b: Vec2f) =
   line(a.x, a.y, b.x, b.y)
+
+proc draw(self: Cable) =
+  # shadow
+  let offset = vec2f(0.0,1.0)
+  setColor(1)
+  line(a.x, a.y, points[0].pos.x, points[0].pos.y+1)
+  line(points[0].pos+offset, points[1].pos+offset)
+  line(points[1].pos+offset, points[2].pos+offset)
+  line(points[2].pos.x, points[2].pos.y+1, b.x, b.y+1)
+
+  setColor(8)
+  line(a.x, a.y, points[0].pos.x, points[0].pos.y)
+  line(points[0].pos, points[1].pos)
+  line(points[1].pos, points[2].pos)
+  line(points[2].pos.x, points[2].pos.y, b.x, b.y)
+
   circfill(a.x,a.y,1)
   circfill(b.x,b.y,1)
 
@@ -307,13 +397,14 @@ method draw(self: Object) {.base.} =
 method draw(self: Box) =
   for socket in outputSockets:
     setColor(13)
-    circfill(socket.x, socket.y, 2)
+    rectfill(socket.x-1, socket.y-1, socket.x+1, socket.y+1)
     if socket.connectedTo == nil:
       setColor(0)
       circfill(socket.x, socket.y, 1)
   for socket in inputSockets:
     setColor(11)
-    circfill(socket.x, socket.y, 2)
+    rectfill(socket.x-1, socket.y-1, socket.x+1, socket.y+1)
+    #circfill(socket.x, socket.y, 2)
     if socket.connectedTo == nil:
       setColor(0)
       circfill(socket.x, socket.y, 1)
@@ -321,6 +412,45 @@ method draw(self: Box) =
 method drawOsc(self: Box, x,y,w,h: int) {.base.} =
   setColor(0)
   rectfill(x,y,x+w-1,y+h-1)
+  setColor(13)
+  let hh = h div 2
+  for i in 1..<buffer.len:
+    let x0 = x + (((i-1).float / buffer.len.float) * w.float).int
+    let x1 = x + ((i.float / buffer.len.float) * w.float).int
+    let v0 = buffer[(writeHead + (i - 1)) mod buffer.len]
+    let v1 = buffer[(writeHead + i) mod buffer.len]
+    let y0 = hh - clamp((v0 * hh.float).int, -hh + 2, hh - 2)
+    let y1 = hh - clamp((v1 * hh.float).int, -hh + 2, hh - 2)
+    line(x0, y + y0, x1, y + y1)
+
+method drawOsc(self: AlterBox, x,y,w,h: int) =
+  setColor(0)
+  rectfill(x,y,x+w-1,y+h-1)
+
+  block:
+    setColor(11)
+    let hh = h div 2
+    for i in 1..<buffer.len:
+      let x0 = x + (((i-1).float / buffer.len.float) * w.float).int
+      let x1 = x + ((i.float / buffer.len.float) * w.float).int
+      let v0 = inputBuffer0[(writeHead + (i - 1)) mod buffer.len]
+      let v1 = inputBuffer0[(writeHead + i) mod buffer.len]
+      let y0 = hh - clamp((v0 * hh.float).int, -hh + 2, hh - 2)
+      let y1 = hh - clamp((v1 * hh.float).int, -hh + 2, hh - 2)
+      line(x0, y + y0, x1, y + y1)
+
+  if inputSockets.len > 1:
+    setColor(10)
+    let hh = h div 2
+    for i in 1..<buffer.len:
+      let x0 = x + (((i-1).float / buffer.len.float) * w.float).int
+      let x1 = x + ((i.float / buffer.len.float) * w.float).int
+      let v0 = inputBuffer1[(writeHead + (i - 1)) mod buffer.len]
+      let v1 = inputBuffer1[(writeHead + i) mod buffer.len]
+      let y0 = hh - clamp((v0 * hh.float).int, -hh + 2, hh - 2)
+      let y1 = hh - clamp((v1 * hh.float).int, -hh + 2, hh - 2)
+      line(x0, y + y0, x1, y + y1)
+
   setColor(13)
   let hh = h div 2
   for i in 1..<buffer.len:
@@ -345,7 +475,8 @@ method drawOsc(self: TargetBox, x,y,w,h: int) =
     let y0 = hh - clamp((v0 * hh.float).int, -hh + 2, hh - 2)
     let y1 = hh - clamp((v1 * hh.float).int, -hh + 2, hh - 2)
     line(x0, y + y0, x1, y + y1)
-  setColor(6)
+
+  setColor(if difference < 0.1: 8 else: 6)
   for i in 1..<targetBuffer.len:
     let x0 = x + (((i-1).float / targetBuffer.len.float) * w.float).int
     let x1 = x + ((i.float / targetBuffer.len.float) * w.float).int
@@ -365,7 +496,7 @@ method drawOsc(self: TargetBox, x,y,w,h: int) =
     else:
       pset(x + x0, y+h-1, 8)
 
-  if w > 64:
+  if w >= 64:
     printShadowR("SYNC: " & $(100 - (difference * 100).int) & "%", x + w, y + 2)
 
 method draw(self: OscBox) =
@@ -400,7 +531,9 @@ method update(self: TargetBox, dt: float) =
   let mx = x div 16
   let my = y div 16
 
-  if difference > 0.05 and nextDifference <= 0.05:
+  if difference > 0.06 and nextDifference <= 0.06:
+    #playSound(SFX_DOOROPEN, 3)
+    playSound(SFX_SOLVED, 2)
     if mget(mx+1,my) == 9:
       mset(mx+1,my,10)
       for i in 0..5:
@@ -420,8 +553,9 @@ method update(self: TargetBox, dt: float) =
       for i in 0..5:
         particles.add(Particle(kind: dustParticle, pos: vec2f((mx * 16 + 8).float,((my + 1) * 16).float + rnd(16.0)), vel: rndVec(0.5), ttl: 1.5, maxttl: 1.5, above: true))
 
-  elif difference <= 0.05 and nextDifference > 0.05:
-    echo "closing door"
+  elif difference <= 0.06 and nextDifference > 0.06:
+    #playSound(SFX_DOOROPEN, 3)
+    playSound(SFX_UNSOLVED, 2)
     if mget(mx+1,my) == 10:
       mset(mx+1,my,9)
     if mget(mx-1,my) == 10:
@@ -530,8 +664,8 @@ proc isPlatform(t: uint8): bool =
 proc isTouchingType(x,y,w,h: int, check: proc(t: uint8): bool): bool =
   #if x < startX or x + w > startX + 15 * 16 or y < startY or y >= startY + 8 * 16:
   #  return check(255)
-  for i in max(startX div 16,(x div 16))..min(startX+15*16,(x+w-1) div 16):
-    for j in max(startY div 16,(y div 16))..min(startY+9*16,(y+h-1) div 16):
+  for i in max((startX-1) div 16,(x div 16))..min(startX+16*16,(x+w-1) div 16):
+    for j in max((startY-1) div 16,(y div 16))..min(startY+10*16,(y+h-1) div 16):
       let t = mget(i,j)
       if check(t):
         return true
@@ -566,11 +700,23 @@ proc moveY(self: Player, amount: float, start: float) =
       # hit something
       yv = 0
       remy = 0
+      if wasOnGround == false:
+        playSound(SFX_LAND, 0)
+        for i in 0..5:
+          particles.add(Particle(kind: dustParticle, pos: vec2f(x.float,y.float) + vec2f(8.0, 15.0), vel: rndVec(0.2) + vec2f(0.0, -0.1), ttl: 0.5, maxttl: 0.5, above: true))
       wasOnGround = true
       jump = false
+
       break
 
 method update(self: Player, dt: float) =
+  if btnp(pcY):
+    monitor = not monitor
+    if monitor:
+      playSound(SFX_MONITORON, 3)
+    else:
+      playSound(SFX_MONITOROFF, 3)
+
   if btn(pcLeft):
     xv -= 0.5
     dir = 0
@@ -579,17 +725,19 @@ method update(self: Player, dt: float) =
     dir = 1
   if btn(pcA) and btn(pcDown):
     fallThrough = true
-  elif btnp(pcA) and player.wasOnGround and not player.jump:
-    yv -= 6.0
+  elif btnp(pcA) and player.wasOnGround and not jump:
+    yv = -3.0
     jump = true
+    playSound(SFX_JUMP, 0)
     for i in 0..5:
-      particles.add(Particle(kind: dustParticle, pos: vec2f(x.float,y.float) + vec2f(8.0, 15.0), vel: rndVec(0.2) + vec2f(0.0, -0.1), ttl: 0.5, maxttl: 0.5, above: true))
+      particles.add(Particle(kind: dustParticle, pos: vec2f(x.float,y.float) + vec2f(8.0, 15.0), vel: rndVec(0.2) + vec2f(xv * 0.05, yv * 0.05), ttl: 1.5, maxttl: 1.5, above: true))
     wasOnGround = false
 
   if abs(xv) > 0.1 and frame mod 15 == 0:
     if wasOnGround:
       particles.add(Particle(kind: dustParticle, pos: vec2f(x.float,y.float) + vec2f(8.0, 14.0), vel: rndVec(0.5), ttl: 0.5, maxttl: 0.5, above: true))
     walkFrame += 1
+    playSound(SFX_STEP, 0)
     if walkFrame > 1:
       walkFrame = 0
 
@@ -602,11 +750,13 @@ method update(self: Player, dt: float) =
             if ob.outputSockets[0].connectedTo != nil:
               disconnect(ob.outputSockets[0])
             connect(ob.outputSockets[0], self.socket)
+            playSound(SFX_PLUGOUT, 1)
           elif ob.inputSockets.len > 0:
             if ob.inputSockets[0].connectedTo != nil:
               let currentSource = ob.inputSockets[0].connectedTo
               disconnect(ob.inputSockets[0])
               connect(currentSource, self.socket)
+              playSound(SFX_PLUGOUT, 1)
     else:
       # if we're holding a cable, connect it to something, or drop it
       var sourceSocket = self.socket.connectedTo
@@ -622,21 +772,30 @@ method update(self: Player, dt: float) =
                     disconnect(sourceSocket, self.socket)
                     connect(sourceSocket, ob.inputSockets[1])
                     particles.add(Particle(kind: sparkParticle, pos: vec2f(ob.inputSockets[1].x.float, ob.inputSockets[1].y.float), vel: rndVec(0.5), ttl: 0.1, maxttl: 0.1, above: true))
+                    playSound(SFX_PLUGIN, 1)
                 else:
                   if ob.inputSockets[0].connectedTo != nil:
                     disconnect(ob.inputSockets[0])
                   disconnect(sourceSocket, self.socket)
                   connect(sourceSocket, ob.inputSockets[0])
                   particles.add(Particle(kind: sparkParticle, pos: vec2f(ob.inputSockets[0].x.float, ob.inputSockets[0].y.float), vel: rndVec(0.5), ttl: 0.1, maxttl: 0.1, above: true))
+                  playSound(SFX_PLUGIN, 1)
               break
       if self.socket.connectedTo != nil:
         disconnect(self.socket)
 
   # gravity
   if wasOnWall and yv > 0:
-    yv += 0.05
+    yv += 0.10
   else:
-    yv += 0.35
+    if btn(pcA) and jump and yv < -0.2:
+      yv += 0.08
+    else:
+      yv += 0.20
+
+  let maxfall = if wasOnWall: 1.0 else: 3.0
+  if yv > maxfall:
+    yv = maxfall
 
   moveX(xv, 0.0)
   moveY(yv, 0.0)
@@ -682,6 +841,11 @@ proc loadLevel(newlevelId: int) =
   let startTX = startX div 16
   let startTY = startY div 16
 
+  transitionIn = 0.0
+  transitionOut = 0.0
+
+  var targetCounter = 0
+
   for y in startTY..<startTY+9:
     for x in startTX..<startTX+15:
       let t = mget(x,y)
@@ -701,7 +865,7 @@ proc loadLevel(newlevelId: int) =
         objects.add(ob)
       of 47:
         mset(x,y,16)
-        var ob = newOscBox(x * 16, y * 16, 32.0, oscPulse)
+        var ob = newOscBox(x * 16, y * 16, 32.0, oscSquare)
         objects.add(ob)
       of 55:
         mset(x,y,16)
@@ -709,7 +873,7 @@ proc loadLevel(newlevelId: int) =
         objects.add(ob)
       of 63:
         mset(x,y,16)
-        var ob = newOscBox(x * 16, y * 16, 32.0, oscNoise)
+        var ob = newOscBox(x * 16, y * 16, 32.0, oscPulse)
         objects.add(ob)
 
       of 30:
@@ -722,7 +886,7 @@ proc loadLevel(newlevelId: int) =
         objects.add(ob)
       of 46:
         mset(x,y,16)
-        var ob = newOscBox(x * 16, y * 16, 64.0, oscPulse)
+        var ob = newOscBox(x * 16, y * 16, 64.0, oscSquare)
         objects.add(ob)
       of 54:
         mset(x,y,16)
@@ -730,11 +894,11 @@ proc loadLevel(newlevelId: int) =
         objects.add(ob)
       of 62:
         mset(x,y,16)
-        var ob = newOscBox(x * 16, y * 16, 64.0, oscNoise)
+        var ob = newOscBox(x * 16, y * 16, 64.0, oscPulse)
         objects.add(ob)
 
       of 29:
-        var ob = newOscBox(x * 16, y * 16, 64.0, oscSine)
+        var ob = newOscBox(x * 16, y * 16, 128.0, oscSine)
         mset(x,y,16)
         objects.add(ob)
       of 37:
@@ -743,7 +907,7 @@ proc loadLevel(newlevelId: int) =
         objects.add(ob)
       of 45:
         mset(x,y,16)
-        var ob = newOscBox(x * 16, y * 16, 128.0, oscPulse)
+        var ob = newOscBox(x * 16, y * 16, 128.0, oscSquare)
         objects.add(ob)
       of 53:
         mset(x,y,16)
@@ -751,11 +915,11 @@ proc loadLevel(newlevelId: int) =
         objects.add(ob)
       of 61:
         mset(x,y,16)
-        var ob = newOscBox(x * 16, y * 16, 128.0, oscNoise)
+        var ob = newOscBox(x * 16, y * 16, 128.0, oscPulse)
         objects.add(ob)
 
       of 28:
-        var ob = newOscBox(x * 16, y * 16, 64.0, oscSine)
+        var ob = newOscBox(x * 16, y * 16, 256.0, oscSine)
         mset(x,y,16)
         objects.add(ob)
       of 36:
@@ -764,7 +928,7 @@ proc loadLevel(newlevelId: int) =
         objects.add(ob)
       of 44:
         mset(x,y,16)
-        var ob = newOscBox(x * 16, y * 16, 256.0, oscPulse)
+        var ob = newOscBox(x * 16, y * 16, 256.0, oscSquare)
         objects.add(ob)
       of 52:
         mset(x,y,16)
@@ -772,7 +936,7 @@ proc loadLevel(newlevelId: int) =
         objects.add(ob)
       of 60:
         mset(x,y,16)
-        var ob = newOscBox(x * 16, y * 16, 256.0, oscNoise)
+        var ob = newOscBox(x * 16, y * 16, 256.0, oscPulse)
         objects.add(ob)
 
       of 17:
@@ -806,7 +970,7 @@ proc loadLevel(newlevelId: int) =
           hiddenObjects.add(hosc)
         of 1:
           var hosc1 = newOscBox(0,0, 64.0, oscSine)
-          var hosc2 = newOscBox(0,0, 128.0, oscPulse)
+          var hosc2 = newOscBox(0,0, 128.0, oscSquare)
           var hadd = newAlterBox(0,0, akAdd)
           connect(hosc1.outputSockets[0], hadd.inputSockets[0], false)
           connect(hosc2.outputSockets[0], hadd.inputSockets[1], false)
@@ -815,7 +979,7 @@ proc loadLevel(newlevelId: int) =
           hiddenObjects.add(hosc2)
           hiddenObjects.add(hadd)
         of 2:
-          var hosc1 = newOscBox(0,0, 32.0, oscPulse)
+          var hosc1 = newOscBox(0,0, 32.0, oscSquare)
           var hosc2 = newOscBox(0,0, 64.0, oscSaw)
           var hmul = newAlterBox(0,0, akMul)
           var hinv = newAlterBox(0, 0, akInvert)
@@ -827,8 +991,54 @@ proc loadLevel(newlevelId: int) =
           hiddenObjects.add(hosc2)
           hiddenObjects.add(hinv)
           hiddenObjects.add(hmul)
+        of 3:
+          var hosc3 = newOscBox(0,0, 128.0, oscSine)
+          var hosc2 = newOscBox(0,0, 64.0, oscSine)
+          var hadd = newAlterBox(0,0, akAdd)
+          connect(hosc3.outputSockets[0], hadd.inputSockets[0], false)
+          connect(hosc2.outputSockets[0], hadd.inputSockets[1], false)
+          connect(hadd.outputSockets[0], ob.targetInputs[0], false)
+          hiddenObjects.add(hosc3)
+          hiddenObjects.add(hosc2)
+          hiddenObjects.add(hadd)
+        of 4:
+          case targetCounter:
+          of 0:
+            # tri1 + (pls3 / 2) inverted
+            var hoscTri1 = newOscBox(0,0, 32.0, oscTriangle)
+            var hoscPls3 = newOscBox(0,0, 128.0, oscPulse)
+            var hdiv2 = newAlterBox(0,0, akDiv2)
+            var hinv = newAlterBox(0,0, akInvert)
+            var hadd = newAlterBox(0,0, akAdd)
+            connect(hoscTri1.outputSockets[0], hadd.inputSockets[0], false)
+            connect(hoscPls3.outputSockets[0], hdiv2.inputSockets[0], false)
+            connect(hdiv2.outputSockets[0], hadd.inputSockets[1], false)
+            connect(hadd.outputSockets[0], hinv.inputSockets[0], false)
+            connect(hinv.outputSockets[0], ob.targetInputs[0], false)
+            hiddenObjects.add(hoscTri1)
+            hiddenObjects.add(hoscPls3)
+            hiddenObjects.add(hdiv2)
+            hiddenObjects.add(hadd)
+            hiddenObjects.add(hinv)
+          of 1:
+            var hoscSin4 = newOscBox(0,0, 256.0, oscSine)
+            var hoscTri1 = newOscBox(0,0, 32.0, oscTriangle)
+            var hinv = newAlterBox(0,0, akInvert)
+            var hadd = newAlterBox(0,0, akAdd)
+            connect(hoscSin4.outputSockets[0], hadd.inputSockets[0], false)
+            connect(hoscTri1.outputSockets[0], hinv.inputSockets[0], false)
+            connect(hinv.outputSockets[0], hadd.inputSockets[1], false)
+            connect(hadd.outputSockets[0], ob.targetInputs[0], false)
+            hiddenObjects.add(hoscSin4)
+            hiddenObjects.add(hoscTri1)
+            hiddenObjects.add(hadd)
+            hiddenObjects.add(hinv)
+          else:
+            discard
         else:
           discard
+
+        targetCounter += 1
       else:
         discard
 
@@ -837,18 +1047,41 @@ proc loadLevel(newlevelId: int) =
 
   pauseAudio(0)
 
-proc loadSoundFile(filename: string): ptr TSNDFILE =
+proc loadSoundFileStreaming(filename: string): ptr TSNDFILE =
   var info: Tinfo
   var fp = sndfile.open(filename.cstring, READ, info.addr)
   if fp == nil:
     raise newException(IOError, "Error opening vorbis file: " & filename)
   return fp
 
+proc loadSoundFile(index: int, filename: string) =
+  var info: Tinfo
+  var fp = sndfile.open(filename.cstring, READ, info.addr)
+  if fp == nil:
+    raise newException(IOError, "Error opening vorbis file: " & filename)
+  var sfx: SfxData = new(SfxData)
+  sfx.data = newSeq[float32](info.frames)
+
+  let count = fp.read_float(addr(sfx.data[0]), info.frames)
+  discard fp.close()
+  sfxLibrary[index] = sfx
 
 proc gameInit() =
   loadSpriteSheet("spritesheet.png", 16, 16)
   loadFont("font5x5.png", " !\"#$%&'()*+,-./0123456789:;<=>?@abcdefghijklmnopqrstuvwxyz[\\]^_`ABCDEFGHIJKLMNOPQRSTUVWXYZ{:}~\n")
-  ambience = loadSoundFile("assets/music/ambience1.ogg")
+  ambience = loadSoundFileStreaming("assets/music/ambience1.ogg")
+
+  loadSoundFile(0, "assets/sfx/plugin.ogg")
+  loadSoundFile(1, "assets/sfx/plugout.ogg")
+  loadSoundFile(2, "assets/sfx/jump.ogg")
+  loadSoundFile(3, "assets/sfx/land.ogg")
+  loadSoundFile(4, "assets/sfx/solved.ogg")
+  loadSoundFile(5, "assets/sfx/unsolved.ogg")
+  loadSoundFile(6, "assets/sfx/dooropen.ogg")
+  loadSoundFile(7, "assets/sfx/step.ogg")
+  loadSoundFile(8, "assets/sfx/monitoron.ogg")
+  loadSoundFile(9, "assets/sfx/monitoroff.ogg")
+
   timerem = 60 * 60 * 60
 
   particles = initPool[Particle](512)
@@ -860,8 +1093,6 @@ proc gameInit() =
     a.ttl > 0.0
   )
 
-
-
   loadLevel(0)
 
 proc gameUpdate(dt: float) =
@@ -870,6 +1101,9 @@ proc gameUpdate(dt: float) =
 
   for i in 0..<hiddenObjects.len:
     hiddenObjects[i].update(dt)
+
+  for cable in cables:
+    cable.update(dt)
 
   cables.keepIf() do(a: Cable) -> bool:
     return a.toRemove == false
@@ -885,15 +1119,15 @@ proc gameUpdate(dt: float) =
       a.ttl > 0.0
   )
 
+  if player.x + player.hitbox.x + player.hitbox.w >= (levelId + 1) * 15 * 16:
+    if transitionOut < 1.0:
+      transitionOut += 0.05
+    else:
+      loadLevel(levelId + 1)
+      transitionOut = 0.0
+    return
+
   timerem -= 1
-
-  if btnp(pcY) or player.x + player.hitbox.x + player.hitbox.w >= (levelId + 1) * 16 * 16:
-    loadLevel(levelId + 1)
-    return
-
-  if player.x < levelId * 15 * 16 - 16 - 4:
-    loadLevel(levelId - 1)
-    return
 
 proc drawParticles() =
   for p in particles.mitems:
@@ -946,7 +1180,6 @@ proc gameDraw() =
         player.nearestBox = box
         player.nearestBoxDist = nearestBoxDist
 
-  var showTargetOsc = false
   if player.nearestBox != nil and nearestBoxDist < 20.0:
     setColor(15)
     if player.socket.connectedTo != nil:
@@ -960,6 +1193,8 @@ proc gameDraw() =
       for socket in player.nearestBox.outputSockets:
         rect(socket.x - 2, socket.y - 2, socket.x + 2, socket.y + 2)
 
+  if monitor:
+    var showTargetOsc = false
     if player.nearestBox of TargetBox:
       showTargetOsc = true
       let x = clamp(player.x - 32, startX + 4, startX + screenWidth - 64)
@@ -970,23 +1205,23 @@ proc gameDraw() =
       setColor(14)
       rect(x-1,y-1,x-1+w+1,y-1+h+1)
 
-  if player.socket.connectedTo != nil and not showTargetOsc:
-    let box = Box(player.socket.connectedTo.obj)
-    let x = clamp(player.x - 32, startX + 4, startX + screenWidth - 64)
-    let y = clamp(player.y - 32 - 8, startY + 4, startY + screenHeight - 32)
-    let w = 64
-    let h = 32
-    box.drawOsc(x,y,w,h)
-    setColor(14)
-    rect(x-1,y-1,x-1+w+1,y-1+h+1)
-  if player.socket.connectedTo == nil and not showTargetOsc and player.nearestBox != nil and nearestBoxDist < 20.0:
-    let x = clamp(player.x - 32, startX + 4, startX + screenWidth - 64)
-    let y = clamp(player.y - 32 - 8, startY + 4, startY + screenHeight - 32)
-    let w = 64
-    let h = 32
-    player.nearestBox.drawOsc(x,y,w,h)
-    setColor(14)
-    rect(x-1,y-1,x-1+w+1,y-1+h+1)
+    if player.socket.connectedTo != nil and not showTargetOsc:
+      let box = Box(player.socket.connectedTo.obj)
+      let x = clamp(player.x - 32, startX + 4, startX + screenWidth - 64)
+      let y = clamp(player.y - 32 - 8, startY + 4, startY + screenHeight - 32)
+      let w = 64
+      let h = 32
+      box.drawOsc(x,y,w,h)
+      setColor(14)
+      rect(x-1,y-1,x-1+w+1,y-1+h+1)
+    if player.socket.connectedTo == nil and not showTargetOsc and player.nearestBox != nil and nearestBoxDist < 20.0:
+      let x = clamp(player.x - 32, startX + 4, startX + screenWidth - 64)
+      let y = clamp(player.y - 32 - 8, startY + 4, startY + screenHeight - 32)
+      let w = 64
+      let h = 32
+      player.nearestBox.drawOsc(x,y,w,h)
+      setColor(14)
+      rect(x-1,y-1,x-1+w+1,y-1+h+1)
 
   setCamera()
 
@@ -998,32 +1233,64 @@ proc gameDraw() =
   let seconds = timerem div 60 mod 60
   print(align($minutes,2,'0') & ":" & align($seconds,2,'0'), screenWidth - 6 * 5, 3)
 
+  setColor(15)
+  if levelId == 0:
+    print("JUMP [Z]  CONNECT [X]  MONITOR [C]", 4, screenHeight - 8)
+  elif levelId == 1:
+    print("[DOWN + X] CONNECT TO LOWER SOCKET", 4, screenHeight - 8)
+  elif levelId == 2:
+    print("[C] MONITOR DOOR TO COMPARE WAVES", 4, screenHeight - 8)
+
+  setColor(0)
+
+  block:
+    let edge = (transitionIn * screenWidth.float).int
+    rectfill(edge, 0, screenWidth, screenHeight)
+    if transitionIn < 1.0:
+      transitionIn += 0.02
+
+  rectfill(0, 0, transitionOut * screenWidth.float, screenHeight)
+
 proc audioCallback(samples: pointer, nSamples: int) =
+  # add in ambience first
   let read = ambience.read_float(cast[ptr cfloat](samples), nSamples.TCOUNT)
   if read < nSamples:
     discard ambience.seek(0, SEEK_SET)
   let samples = cast[ptr array[int32.high,float32]](samples)
-  for i in 0..<nSamples:
-    # add in ambience
 
-    # add sfx
+  # mix in some sfx
+
+  var lastSample: float32
+  for i in 0..<nSamples:
+    samples[i] *= 0.5
     if i mod 2 == 0:
+      lastSample = 0.0
+
+      for j in 0..<sfxChannels.len:
+        if sfxChannels[j].sfx != nil:
+          lastSample += sfxChannels[j].sfx.data[sfxChannels[j].pos]
+          sfxChannels[j].pos += 1
+          if sfxChannels[j].pos == sfxChannels[j].sfx.data.len:
+            sfxChannels[j].sfx = nil
+
       for j in 0..<objects.len:
         let obj = objects[j]
         if obj of Box:
           let box = Box(obj)
           box.process()
           if box == player.nearestBox and player.nearestBoxDist < 20.0 and box of TargetBox:
-            samples[i] += TargetBox(box).targetValue * 0.25 * (16.0 / box.distanceFromPlayer)
+            lastSample += TargetBox(box).targetValue * 0.125 * (16.0 / box.distanceFromPlayer)
           elif box.outputSockets.len > 0 and ((player.socket.connectedTo != nil and player.socket.connectedTo == box.outputSockets[0]) or (player.nearestBox == box and player.nearestBoxDist < 20.0)):
-            samples[i] += box.value * 0.25 * (16.0 / box.distanceFromPlayer)
+            lastSample += box.value * 0.125 * (16.0 / box.distanceFromPlayer)
 
       for j in 0..<hiddenObjects.len:
         let obj = hiddenObjects[j]
         if obj of Box:
           Box(obj).process()
+
+      samples[i] += lastSample
     else:
-      samples[i] = samples[i-1]
+      samples[i] += lastSample
 
 nico.init("impbox", "minisyn")
 nico.loadPaletteFromGPL("phase.gpl")
