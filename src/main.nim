@@ -170,6 +170,13 @@ var transitionIn: float
 var transitionOut: float
 var transition: bool
 
+var showMenu: bool
+var menuOption = 0
+var waveVolume: float32 = 1.0
+var sfxVolume: float32 = 1.0
+var ambienceVolume: float32 = 0.5
+var volumeDisplayTimer: float = 0.0
+
 var noclip: bool
 
 var particles: Pool[Particle]
@@ -1342,6 +1349,69 @@ proc gameInit() =
   loadLevel(0)
 
 proc gameUpdate(dt: float) =
+
+  if btnp(pcStart) or btnp(pcBack):
+    showMenu = not showMenu
+    playSound(SFX_MONITORON,0)
+    return
+
+  if showMenu:
+    if btnp(pcUp):
+      menuOption -= 1
+      if menuOption < 0:
+        menuOption = 0
+      playSound(SFX_PLUGIN,0)
+    if btnp(pcDown):
+      menuOption += 1
+      if menuOption > 4:
+        menuOption = 4
+      playSound(SFX_PLUGIN,0)
+
+    case menuOption:
+    of 0:
+      if btnp(pcLeft):
+        waveVolume -= 0.1
+        if waveVolume < 0.0:
+          waveVolume = 0.0
+        playSound(SFX_PLUGOUT,0)
+      if btnp(pcRight):
+        waveVolume += 0.1
+        if waveVolume > 1.0:
+          waveVolume = 1.0
+        playSound(SFX_PLUGOUT,0)
+    of 1:
+      if btnp(pcLeft):
+        ambienceVolume -= 0.1
+        if ambienceVolume < 0.0:
+          ambienceVolume = 0.0
+        playSound(SFX_PLUGOUT,0)
+      if btnp(pcRight):
+        ambienceVolume += 0.1
+        if ambienceVolume > 1.0:
+          ambienceVolume = 1.0
+        playSound(SFX_PLUGOUT,0)
+    of 2:
+      if btnp(pcLeft):
+        sfxVolume -= 0.1
+        if sfxVolume < 0.0:
+          sfxVolume = 0.0
+        playSound(SFX_PLUGOUT,0)
+      if btnp(pcRight):
+        sfxVolume += 0.1
+        if sfxVolume > 1.0:
+          sfxVolume = 1.0
+        playSound(SFX_PLUGOUT,0)
+    of 3:
+      if btnp(pcA):
+        showMenu = false
+        playSound(SFX_MONITOROFF,0)
+    of 4:
+      if btnp(pcA):
+        shutdown()
+    else:
+      discard
+    return
+
   if gameComplete:
     if gameoverTimeout > 0:
       gameoverTimeout -= dt
@@ -1543,6 +1613,18 @@ proc gameDraw() =
         setColor(15)
         printShadowC("ALL POWER HAS BEEN LOST FOREVER", screenWidth div 2, screenHeight div 2)
 
+  if showMenu:
+    setColor(if menuOption == 0: 15 else: 11)
+    printShadowC("WAVEFORM VOLUME: " & $((waveVolume * 100.0).int), screenWidth div 2, 30)
+    setColor(if menuOption == 1: 15 else: 11)
+    printShadowC("AMBIENCE VOLUME: " & $((ambienceVolume * 100.0).int), screenWidth div 2, 40)
+    setColor(if menuOption == 2: 15 else: 11)
+    printShadowC("SFX VOLUME: " & $((sfxVolume * 100.0).int), screenWidth div 2, 50)
+    setColor(if menuOption == 3: 15 else: 11)
+    printShadowC("CONTINUE", screenWidth div 2, 60)
+    setColor(if menuOption == 4: 15 else: 11)
+    printShadowC("QUIT GAME", screenWidth div 2, 80)
+
 proc audioCallback(samples: pointer, nSamples: int) =
   # add in ambience first
   if not gameComplete:
@@ -1555,13 +1637,13 @@ proc audioCallback(samples: pointer, nSamples: int) =
 
   var lastSample: float32
   for i in 0..<nSamples:
-    samples[i] *= 0.5
+    samples[i] *= ambienceVolume
     if i mod 2 == 0:
       lastSample = 0.0
 
       for j in 0..<sfxChannels.len:
         if sfxChannels[j].sfx != nil:
-          lastSample += sfxChannels[j].sfx.data[sfxChannels[j].pos]
+          lastSample += sfxChannels[j].sfx.data[sfxChannels[j].pos] * sfxVolume
           sfxChannels[j].pos += 1
           if sfxChannels[j].pos == sfxChannels[j].sfx.data.len:
             sfxChannels[j].sfx = nil
@@ -1574,7 +1656,7 @@ proc audioCallback(samples: pointer, nSamples: int) =
           if box == player.nearestBox and player.nearestBoxDist < 20.0 and box of TargetBox:
             lastSample += TargetBox(box).targetValue * 0.125 * (16.0 / box.distanceFromPlayer)
           elif box.outputSockets.len > 0 and ((player.socket.connectedTo != nil and player.socket.connectedTo == box.outputSockets[0]) or (player.nearestBox == box and player.nearestBoxDist < 20.0)):
-            lastSample += box.value * 0.125 * (16.0 / box.distanceFromPlayer)
+            lastSample += box.value * 0.125 * waveVolume * (16.0 / max(box.distanceFromPlayer, 1.0))
 
       for j in 0..<hiddenObjects.len:
         let obj = hiddenObjects[j]
