@@ -206,7 +206,6 @@ proc newCable(a: Socket, b: Socket): Cable =
     result.points[i].vel = vec2f(0.0, 0.01)
 
 proc connect(insock: Socket, outsock: Socket, cable = true) =
-  debug("connect", insock.obj.name, outsock.obj.name)
   if insock.obj == outsock.obj:
     return
   insock.connectedTo = outsock
@@ -215,7 +214,6 @@ proc connect(insock: Socket, outsock: Socket, cable = true) =
     cables.add(newCable(insock, outsock))
 
 proc disconnect(outsock: Socket) =
-  debug("disconnect", outsock.obj.name)
   if outsock.connectedTo != nil:
     let tmp = outsock.connectedTo
     outsock.connectedTo = nil
@@ -226,7 +224,6 @@ proc disconnect(outsock: Socket) =
       cable.toRemove = true
 
 proc disconnect(insock: Socket, outsock: Socket) =
-  debug("disconnect", insock.obj.name, outsock.obj.name)
   insock.connectedTo = nil
   outsock.connectedTo = nil
   for cable in cables:
@@ -769,9 +766,6 @@ proc moveY(self: Player, amount: float, start: float) =
       break
 
 method update(self: Player, dt: float) =
-  if btnp(pcX):
-    noclip = not noclip
-
   if btnp(pcY):
     monitor = not monitor
     if monitor:
