@@ -56,6 +56,7 @@ type
     a: Socket
     b: Socket
     points: array[3, tuple[pos: Vec2f, vel: Vec2f]]
+    color: int
 
 type Player = ref object of Object
   xv,yv: float
@@ -83,6 +84,8 @@ type OscBox = ref object of Box
   phase: float32
   shape: OscShape
   pulseWidth: float32
+  phaseMod: float32
+  hasPhaseMod: bool
 
 type TargetBox = ref object of Box
   # takes a bunch of hidden inputs that say what the output should be
@@ -149,6 +152,8 @@ const
 
 ## GLOBALS
 
+var gameComplete = false
+var gameoverTimeout = 5.0
 var frame = 0
 var levelId: int
 var startX,startY: int
@@ -164,6 +169,8 @@ var monitor: bool
 var transitionIn: float
 var transitionOut: float
 var transition: bool
+
+var noclip: bool
 
 var particles: Pool[Particle]
 var sfxLibrary: array[64, SfxData]
@@ -189,6 +196,7 @@ proc newCable(a: Socket, b: Socket): Cable =
   result = new(Cable)
   result.a = a
   result.b = b
+  result.color = rnd([8,2,14])
 
   let ap = vec2f(a.x.float, a.y.float)
   let bp = vec2f(b.x.float, b.y.float)
@@ -197,14 +205,16 @@ proc newCable(a: Socket, b: Socket): Cable =
     result.points[i].pos = lerp(ap,bp, (i+1).float / 5.0)
     result.points[i].vel = vec2f(0.0, 0.01)
 
-proc connect(insock: Socket, outsock: Socket, cable = true) =
+proc connect(insock: Socket, outsock: Socket, cable = true, cableColor: int = 8) =
   debug("connect", insock.obj.name, outsock.obj.name)
   if insock.obj == outsock.obj:
     return
   insock.connectedTo = outsock
   outsock.connectedTo = insock
   if cable:
-    cables.add(newCable(insock, outsock))
+    var c = newCable(insock, outsock)
+    c.color = cableColor
+    cables.add(c)
 
 proc disconnect(outsock: Socket) =
   debug("disconnect", outsock.obj.name)
@@ -327,9 +337,14 @@ method process(self: AlterBox) =
   procCall process(Box(self))
 
 method process(self: OscBox) =
+  if hasPhaseMod:
+    phaseMod = 0.0
+    if inputSockets[0].connectedTo != nil:
+      phaseMod = inputSockets[0].connectedTo.value
+
   case shape:
   of oscSine:
-    value = sin(phase)
+    value = sin(phase + phaseMod)
   of oscSquare:
     value = if phase < PI: -1.0 else: 1.0
   of oscTriangle:
@@ -391,16 +406,20 @@ proc draw(self: Cable) =
   let offset = vec2f(0.0,1.0)
   setColor(1)
 
-  line(a.x, a.y, points[0].pos.x, points[0].pos.y+1)
-  line(points[0].pos+offset, points[1].pos+offset)
-  line(points[1].pos+offset, points[2].pos+offset)
-  line(points[2].pos.x, points[2].pos.y+1, b.x, b.y+1)
+  try:
+    line(a.x, a.y, points[0].pos.x, points[0].pos.y+1)
+    line(points[0].pos+offset, points[1].pos+offset)
+    line(points[1].pos+offset, points[2].pos+offset)
+    line(points[2].pos.x, points[2].pos.y+1, b.x, b.y+1)
 
-  setColor(8)
-  line(a.x, a.y, points[0].pos.x, points[0].pos.y)
-  line(points[0].pos, points[1].pos)
-  line(points[1].pos, points[2].pos)
-  line(points[2].pos.x, points[2].pos.y, b.x, b.y)
+    setColor(self.color)
+    line(a.x, a.y, points[0].pos.x, points[0].pos.y)
+    line(points[0].pos, points[1].pos)
+    line(points[1].pos, points[2].pos)
+    line(points[2].pos.x, points[2].pos.y, b.x, b.y)
+  except OverflowError:
+    echo "OVERFLOW!!!"
+    discard
 
   circfill(a.x,a.y,1)
   circfill(b.x,b.y,1)
@@ -527,10 +546,10 @@ method update(self: Box, dt: float) =
   distanceFromPlayer = sqrt(dx * dx + dy * dy)
 
 method update(self: TargetBox, dt: float) =
-  let bucketSize = differenceBuffer.len div 128
 
   var currentDifference = 0.0
 
+  let bucketSize = differenceBuffer.len div 128
   for x0 in 0..<128:
     var bucketDifference = 0.0
     for i in 0..<bucketSize:
@@ -545,7 +564,7 @@ method update(self: TargetBox, dt: float) =
   let mx = x div 16
   let my = y div 16
 
-  if difference > 0.06 and nextDifference <= 0.06:
+  if difference > 0.09 and nextDifference <= 0.09:
     #playSound(SFX_DOOROPEN, 3)
     playSound(SFX_SOLVED, 2)
     if mget(mx+1,my) == 9:
@@ -567,7 +586,7 @@ method update(self: TargetBox, dt: float) =
       for i in 0..5:
         particles.add(Particle(kind: dustParticle, pos: vec2f((mx * 16 + 8).float,((my + 1) * 16).float + rnd(16.0)), vel: rndVec(0.5), ttl: 1.5, maxttl: 1.5, above: true))
 
-  elif difference <= 0.06 and nextDifference > 0.06:
+  elif difference <= 0.10 and nextDifference > 0.10:
     #playSound(SFX_DOOROPEN, 3)
     playSound(SFX_UNSOLVED, 2)
     if mget(mx+1,my) == 10:
@@ -603,7 +622,7 @@ proc newPlayer(x,y: int): Player =
   result.dir = 1
   result.socket = newSocket(result, x + 8, y + 8)
 
-proc newOscBox(x,y: int, freq: float32, shape: OscShape): OscBox =
+proc newOscBox(x,y: int, freq: float32, shape: OscShape, phaseMod: bool = false): OscBox =
   result = new(OscBox)
   result.name = "osc:" & $shape
   result.x = x
@@ -615,8 +634,13 @@ proc newOscBox(x,y: int, freq: float32, shape: OscShape): OscBox =
   result.pulseWidth = PI
   result.freq = freq
   result.shape = shape
+  result.hasPhaseMod = phaseMod
+  result.phaseMod = 0.0
 
-  result.inputSockets = @[]
+  if phaseMod:
+    result.inputSockets = @[newSocket(result, x, y + 8)]
+  else:
+    result.inputSockets = @[]
   result.outputSockets = @[newSocket(result, x + 16, y + 8)]
 
 proc newTargetBox(x,y: int): TargetBox =
@@ -681,7 +705,7 @@ proc newFilterBox(x,y: int, kind: FilterKind): FilterBox =
   result.hitbox.y = 0
   result.hitbox.w = 16
   result.hitbox.h = 16
-  result.cutoff = if kind == fkHP: 0.01 else: 0.05
+  result.cutoff = if kind == fkHP: 0.001 else: 0.05
   result.q = 0.1
   result.kind = kind
 
@@ -717,7 +741,7 @@ proc isTouchingType(self: Player, ox,oy: int, check: proc(t: uint8): bool): bool
 proc moveX(self: Player, amount: float, start: float) =
   var step = amount.int.sgn
   for i in start..<abs(amount.int):
-    if not isSolid(step, 0):
+    if noclip or not isSolid(step, 0):
       x += step
       wasOnWall = false
     else:
@@ -747,6 +771,9 @@ proc moveY(self: Player, amount: float, start: float) =
       break
 
 method update(self: Player, dt: float) =
+  if btnp(pcX):
+    noclip = not noclip
+
   if btnp(pcY):
     monitor = not monitor
     if monitor:
@@ -800,19 +827,20 @@ method update(self: Player, dt: float) =
 
           # if on left side, check for inputs
           elif player.x + player.hitbox.x + player.hitbox.w <= ob.x:
-            let s = if ob.inputSockets.len > 1 and btn(pcDown): ob.inputSockets[1] else: ob.inputSockets[0]
-            if s.connectedTo == nil:
-              # not already connected, connect s to player
-              connect(player.socket, s)
-              player.connectedToInput = true
-              playSound(SFX_PLUGOUT, 1)
-            else:
-              # already connected to something, disconnect this end
-              let currentSource = s.connectedTo
-              disconnect(s)
-              connect(currentSource, self.socket)
-              player.connectedToInput = false
-              playSound(SFX_PLUGOUT, 1)
+            if ob.inputSockets.len > 0:
+              let s = if ob.inputSockets.len > 1 and btn(pcDown): ob.inputSockets[1] else: ob.inputSockets[0]
+              if s.connectedTo == nil:
+                # not already connected, connect s to player
+                connect(player.socket, s)
+                player.connectedToInput = true
+                playSound(SFX_PLUGOUT, 1)
+              else:
+                # already connected to something, disconnect this end
+                let currentSource = s.connectedTo
+                disconnect(s)
+                connect(currentSource, self.socket)
+                player.connectedToInput = false
+                playSound(SFX_PLUGOUT, 1)
     else:
       # if we're holding a cable, connect it to something, or drop it
       for obj in objects:
@@ -855,11 +883,11 @@ method update(self: Player, dt: float) =
     else:
       yv += 0.20
 
-  let maxfall = if wasOnWall: 1.0 else: 3.0
+  let maxfall = if noclip: 0.0 elif wasOnWall: 1.0 else: 3.0
   if yv > maxfall:
     yv = maxfall
 
-  moveX(xv, 0.0)
+  moveX(xv * (if noclip: 2.0 else: 1.0), 0.0)
   moveY(yv, 0.0)
 
   fallThrough = false
@@ -921,7 +949,7 @@ proc loadLevel(newlevelId: int) =
         player = ob
         mset(x,y,0)
       of 31:
-        var ob = newOscBox(x * 16, y * 16, 32.0, oscSine)
+        var ob = newOscBox(x * 16, y * 16, 32.0, oscSine, levelId >= 6)
         mset(x,y,16)
         objects.add(ob)
       of 39:
@@ -942,7 +970,7 @@ proc loadLevel(newlevelId: int) =
         objects.add(ob)
 
       of 30:
-        var ob = newOscBox(x * 16, y * 16, 64.0, oscSine)
+        var ob = newOscBox(x * 16, y * 16, 64.0, oscSine, levelId >= 6)
         mset(x,y,16)
         objects.add(ob)
       of 38:
@@ -963,7 +991,7 @@ proc loadLevel(newlevelId: int) =
         objects.add(ob)
 
       of 29:
-        var ob = newOscBox(x * 16, y * 16, 128.0, oscSine)
+        var ob = newOscBox(x * 16, y * 16, 128.0, oscSine, levelId >= 6)
         mset(x,y,16)
         objects.add(ob)
       of 37:
@@ -984,7 +1012,7 @@ proc loadLevel(newlevelId: int) =
         objects.add(ob)
 
       of 28:
-        var ob = newOscBox(x * 16, y * 16, 256.0, oscSine)
+        var ob = newOscBox(x * 16, y * 16, 256.0, oscSine, levelId >= 6)
         mset(x,y,16)
         objects.add(ob)
       of 36:
@@ -1100,6 +1128,173 @@ proc loadLevel(newlevelId: int) =
             hiddenObjects.add(hmul)
           else:
             discard
+        of 5:
+          # sin challenge
+          var hoscSin2 = newOscBox(0,0, 64.0, oscSine)
+          var hoscSin3 = newOscBox(0,0, 128.0, oscSine)
+          var hoscSin4 = newOscBox(0,0, 256.0, oscSine)
+
+          var hadd = newAlterBox(0,0, akAdd)
+          var hmul = newAlterBox(0,0, akMul)
+          var hdiv = newAlterBox(0,0, akDiv2)
+          connect(hoscSin2.outputSockets[0], hadd.inputSockets[0])
+          connect(hoscSin3.outputSockets[0], hadd.inputSockets[1])
+          connect(hoscSin4.outputSockets[0], hmul.inputSockets[0])
+          connect(hadd.outputSockets[0], hmul.inputSockets[1])
+          connect(hmul.outputSockets[0], hdiv.inputSockets[0])
+          connect(hdiv.outputSockets[0], ob.targetInputs[0])
+          hiddenObjects.add(hoscSin2)
+          hiddenObjects.add(hoscSin3)
+          hiddenObjects.add(hoscSin4)
+          hiddenObjects.add(hadd)
+          hiddenObjects.add(hmul)
+          hiddenObjects.add(hdiv)
+        of 6:
+          # introduce FM
+          var hoscSin1 = newOscBox(0,0, 32.0, oscSine, true)
+          var hoscSin1a = newOscBox(0,0, 32.0, oscSine, true)
+          var hoscSin4 = newOscBox(0,0, 256.0, oscSine, true)
+          connect(hoscSin4.outputSockets[0], hoscSin1.inputSockets[0])
+          connect(hoscSin1.outputSockets[0], hoscSin1a.inputSockets[0])
+          connect(hoscSin1a.outputSockets[0], ob.targetInputs[0])
+          hiddenObjects.add(hoscSin4)
+          hiddenObjects.add(hoscSin1)
+          hiddenObjects.add(hoscSin1a)
+        of 7:
+          # FM + Splitter
+          var hoscSin1 = newOscBox(0,0, 32.0, oscSine, true)
+          var hoscSin4 = newOscBox(0,0, 256.0, oscSine, true)
+          var hadd = newAlterBox(0,0, akAdd)
+          var hsplit = newSplitterBox(0,0)
+          connect(hoscSin1.outputSockets[0], hsplit.inputSockets[0])
+          connect(hsplit.outputSockets[0], hadd.inputSockets[0])
+          connect(hsplit.outputSockets[1], hadd.inputSockets[1])
+          connect(hadd.outputSockets[0], hoscSin4.inputSockets[0])
+          connect(hoscSin4.outputSockets[0], ob.targetInputs[0])
+          hiddenObjects.add(hoscSin1)
+          hiddenObjects.add(hoscSin4)
+          hiddenObjects.add(hsplit)
+          hiddenObjects.add(hadd)
+        of 8:
+          # FM + Splitter Challenge
+          var hoscSin1a = newOscBox(0,0, 32.0, oscSine, true)
+          var hoscSin1b = newOscBox(0,0, 32.0, oscSine, true)
+          var hoscSin1c = newOscBox(0,0, 32.0, oscSine, true)
+          var hmul = newAlterBox(0,0, akMul)
+          var hsplit = newSplitterBox(0,0)
+          var hdiv = newAlterBox(0,0, akDiv2)
+          connect(hoscSin1a.outputSockets[0], hmul.inputSockets[0])
+          connect(hoscSin1b.outputSockets[0], hmul.inputSockets[1])
+          connect(hmul.outputSockets[0], hsplit.inputSockets[0])
+          connect(hsplit.outputSockets[0], hdiv.inputSockets[0])
+          connect(hsplit.outputSockets[1], hoscSin1a.inputSockets[0])
+          connect(hdiv.outputSockets[0], ob.targetInputs[0])
+          hiddenObjects.add(hoscSin1a)
+          hiddenObjects.add(hoscSin1b)
+          hiddenObjects.add(hoscSin1c)
+          hiddenObjects.add(hmul)
+          hiddenObjects.add(hsplit)
+          hiddenObjects.add(hdiv)
+        of 9:
+          # Introduce LP + HP
+          var hoscSaw4 = newOscBox(0,0, 256.0, oscSaw, false)
+          var hoscSqr2 = newOscBox(0,0, 64.0, oscSquare, false)
+          var hlp = newFilterBox(0,0, fkLP)
+          var hhp = newFilterBox(0,0, fkHP)
+          var hmul = newAlterBox(0,0, akMul)
+          connect(hoscSaw4.outputSockets[0], hhp.inputSockets[0])
+          connect(hhp.outputSockets[0], hlp.inputSockets[0])
+          connect(hlp.outputSockets[0], hmul.inputSockets[0])
+          connect(hoscSqr2.outputSockets[0], hmul.inputSockets[1])
+          connect(hmul.outputSockets[0], ob.targetInputs[0])
+          hiddenObjects.add(hoscSaw4)
+          hiddenObjects.add(hlp)
+          hiddenObjects.add(hmul)
+          hiddenObjects.add(hoscSqr2)
+          hiddenObjects.add(hhp)
+        of 10:
+          # another simpleish filter puzzle
+          var hoscSaw2 = newOscBox(0,0, 64.0, oscSaw, false)
+          var hoscSaw3 = newOscBox(0,0, 128.0, oscSaw, false)
+          var hoscSaw4 = newOscBox(0,0, 256.0, oscSaw, false)
+          var hlp1 = newFilterBox(0,0, fkLP)
+          var hlp2 = newFilterBox(0,0, fkLP)
+          var hlp3 = newFilterBox(0,0, fkLP)
+          var hadd = newAlterBox(0,0, akAdd)
+          var hmul = newAlterBox(0,0, akMul)
+          var hdiv = newAlterBox(0,0, akDiv2)
+          connect(hoscSaw2.outputSockets[0], hlp1.inputSockets[0])
+          connect(hoscSaw3.outputSockets[0], hlp2.inputSockets[0])
+          connect(hoscSaw4.outputSockets[0], hlp3.inputSockets[0])
+          connect(hlp1.outputSockets[0], hmul.inputSockets[0])
+          connect(hlp2.outputSockets[0], hmul.inputSockets[1])
+          connect(hlp3.outputSockets[0], hdiv.inputSockets[0])
+          connect(hdiv.outputSockets[0], hadd.inputSockets[0])
+          connect(hmul.outputSockets[0], hadd.inputSockets[1])
+          connect(hadd.outputSockets[0], ob.targetInputs[0])
+          hiddenObjects.add(hoscSaw2)
+          hiddenObjects.add(hoscSaw3)
+          hiddenObjects.add(hoscSaw4)
+          hiddenObjects.add(hlp1)
+          hiddenObjects.add(hlp2)
+          hiddenObjects.add(hlp3)
+          hiddenObjects.add(hadd)
+          hiddenObjects.add(hmul)
+          hiddenObjects.add(hdiv)
+        of 11:
+          # filter challenge puzzle
+          case targetCounter:
+          of 0:
+            var hoscSin2 = newOscBox(0,0, 64.0, oscSine, true)
+            var hoscSaw1 = newOscBox(0,0, 32.0, oscSaw, false)
+            var hinv = newAlterBox(0,0, akInvert)
+            var hlp = newFilterBox(0,0, fkLP)
+            connect(hoscSaw1.outputSockets[0], hlp.inputSockets[0])
+            connect(hlp.outputSockets[0], hoscSin2.inputSockets[0])
+            connect(hoscSin2.outputSockets[0], hinv.inputSockets[0])
+            connect(hinv.outputSockets[0], ob.targetInputs[0])
+            hiddenObjects.add(hoscSin2)
+            hiddenObjects.add(hoscSaw1)
+            hiddenObjects.add(hinv)
+            hiddenObjects.add(hlp)
+          of 1:
+            var hoscSaw4 = newOscBox(0,0, 256.0, oscSaw, false)
+            var hoscSin3 = newOscBox(0,0, 128.0, oscSine, true)
+            var hhp = newFilterBox(0,0, fkHP)
+            connect(hoscSaw4.outputSockets[0], hoscSin3.inputSockets[0])
+            connect(hoscSin3.outputSockets[0], hhp.inputSockets[0])
+            connect(hhp.outputSockets[0], ob.targetInputs[0])
+            hiddenObjects.add(hoscSin3)
+            hiddenObjects.add(hoscSaw4)
+            hiddenObjects.add(hhp)
+          else:
+            discard
+        of 12:
+          var hoscSqr4 = newOscBox(0,0, 256.0, oscSquare, false)
+          var hoscSqr1 = newOscBox(0,0, 32.0, oscSquare, false)
+          var hmul = newAlterBox(0,0, akMul)
+          var hadd = newAlterBox(0,0, akAdd)
+          var hinv = newAlterBox(0,0, akInvert)
+          var hdiv2 = newAlterBox(0,0, akDiv2)
+          var hsplit = newSplitterBox(0,0)
+          var hlp = newFilterBox(0,0, fkLP)
+          connect(hoscSqr4.outputSockets[0], hsplit.inputSockets[0])
+          connect(hoscSqr1.outputSockets[0], hlp.inputSockets[0])
+          connect(hlp.outputSockets[0], hmul.inputSockets[0])
+          connect(hsplit.outputSockets[0], hmul.inputSockets[1])
+          connect(hsplit.outputSockets[1], hinv.inputSockets[0])
+          connect(hinv.outputSockets[0], hdiv2.inputSockets[0])
+          connect(hdiv2.outputSockets[0], hadd.inputSockets[0])
+          connect(hmul.outputSockets[0], hadd.inputSockets[1])
+          connect(hadd.outputSockets[0], ob.targetInputs[0])
+          hiddenObjects.add(hoscSqr4)
+          hiddenObjects.add(hoscSqr1)
+          hiddenObjects.add(hmul)
+          hiddenObjects.add(hadd)
+          hiddenObjects.add(hinv)
+          hiddenObjects.add(hdiv2)
+          hiddenObjects.add(hsplit)
+          hiddenObjects.add(hlp)
         else:
           discard
 
@@ -1161,6 +1356,16 @@ proc gameInit() =
   loadLevel(0)
 
 proc gameUpdate(dt: float) =
+  if gameComplete:
+    if gameoverTimeout > 0:
+      gameoverTimeout -= dt
+      if gameoverTimeout <= 0:
+        if timerem > 0:
+          playSound(SFX_SOLVED,3)
+        else:
+          playSound(SFX_UNSOLVED,3)
+    return
+
   for i in 0..<objects.len:
     objects[i].update(dt)
 
@@ -1192,7 +1397,14 @@ proc gameUpdate(dt: float) =
       transitionOut = 0.0
     return
 
+  if levelId == 12:
+    if mget((player.x + 8) div 16, (player.y + 16) div 16) == 8:
+      gameComplete = true
+      playSound(SFX_DOOROPEN, 3)
+
   timerem -= 1
+  if timerem < 0:
+    gameComplete = true
 
 proc drawParticles() =
   for p in particles.mitems:
@@ -1305,11 +1517,21 @@ proc gameDraw() =
 
   setColor(15)
   if levelId == 0:
-    print("JUMP [Z]  CONNECT [X]  MONITOR [C]", 4, screenHeight - 8)
+    print("JUMP [Z]  CONNECT [X]  SCOPE [C]", 4, screenHeight - 8)
   elif levelId == 1:
     print("[DOWN + X] CONNECT TO LOWER SOCKET", 4, screenHeight - 8)
   elif levelId == 2:
-    print("[C] MONITOR DOOR TO COMPARE WAVES", 4, screenHeight - 8)
+    print("USE SCOPE [C] TO COMPARE WAVES", 4, screenHeight - 8)
+  elif levelId == 3:
+    print("EXPERIEMENT WITH DIFFERENT COMPONENTS", 4, screenHeight - 8)
+  elif levelId == 4:
+    print("SCOPE [C] SHOWS BOTH INPUT AND OUTPUT", 4, screenHeight - 8)
+  elif levelId == 6:
+    print("CONNECT OSC->OSC TO MODULATE PHASE", 4, screenHeight - 8)
+  elif levelId == 7:
+    print("A SPLITTER CAN DUPLICATE A WAVE", 4, screenHeight - 8)
+  elif levelId == 9:
+    print("FILTER LOW AND HIGH FREQUENCIES", 4, screenHeight - 8)
 
   setColor(0)
 
@@ -1321,11 +1543,25 @@ proc gameDraw() =
 
   rectfill(-1, -1, transitionOut * (screenWidth + 1).float, screenHeight)
 
+  if gameComplete:
+    setColor(0)
+    rectfill(0, 0, screenWidth, screenHeight)
+
+    if timerem > 0:
+      if gameoverTimeout <= 0.0:
+        setColor(15)
+        printShadowC("THE REACTOR HAS BEEN REACTIVATED", screenWidth div 2, screenHeight div 2)
+    else:
+      if gameoverTimeout <= 0.0:
+        setColor(15)
+        printShadowC("ALL POWER HAS BEEN LOST FOREVER", screenWidth div 2, screenHeight div 2)
+
 proc audioCallback(samples: pointer, nSamples: int) =
   # add in ambience first
-  let read = ambience.read_float(cast[ptr cfloat](samples), nSamples.TCOUNT)
-  if read < nSamples:
-    discard ambience.seek(0, SEEK_SET)
+  if not gameComplete:
+    let read = ambience.read_float(cast[ptr cfloat](samples), nSamples.TCOUNT)
+    if read < nSamples:
+      discard ambience.seek(0, SEEK_SET)
   let samples = cast[ptr array[int32.high,float32]](samples)
 
   # mix in some sfx
