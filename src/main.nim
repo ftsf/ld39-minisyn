@@ -360,7 +360,7 @@ proc update(self: Cable, dt: float) =
 
   let totalDist = (ap - bp).length
 
-  if totalDist < 1.0:
+  if totalDist < 2.0:
     return
 
   const k = 0.2
@@ -387,8 +387,10 @@ proc update(self: Cable, dt: float) =
     let ad = adiff.length
     let bdiff = (points[i].pos - endPos)
     let bd = bdiff.length
-    force += -k * (ad - totalDist / 5.0) * adiff.normalize() - b * points[i].vel
-    force += -k * (bd - totalDist / 5.0) * bdiff.normalize() - b * points[i].vel
+    if ad > 0.5:
+      force += -k * (ad - totalDist / 5.0) * adiff.normalize() - b * points[i].vel
+    if bd > 0.5:
+      force += -k * (bd - totalDist / 5.0) * bdiff.normalize() - b * points[i].vel
     points[i].vel += force
 
     points[i].pos += points[i].vel
@@ -401,20 +403,16 @@ proc draw(self: Cable) =
   let offset = vec2f(0.0,1.0)
   setColor(1)
 
-  try:
-    line(a.x, a.y, points[0].pos.x, points[0].pos.y+1)
-    line(points[0].pos+offset, points[1].pos+offset)
-    line(points[1].pos+offset, points[2].pos+offset)
-    line(points[2].pos.x, points[2].pos.y+1, b.x, b.y+1)
+  line(a.x, a.y, points[0].pos.x, points[0].pos.y+1)
+  line(points[0].pos+offset, points[1].pos+offset)
+  line(points[1].pos+offset, points[2].pos+offset)
+  line(points[2].pos.x, points[2].pos.y+1, b.x, b.y+1)
 
-    setColor(self.color)
-    line(a.x, a.y, points[0].pos.x, points[0].pos.y)
-    line(points[0].pos, points[1].pos)
-    line(points[1].pos, points[2].pos)
-    line(points[2].pos.x, points[2].pos.y, b.x, b.y)
-  except OverflowError:
-    echo "OVERFLOW!!!"
-    discard
+  setColor(self.color)
+  line(a.x, a.y, points[0].pos.x, points[0].pos.y)
+  line(points[0].pos, points[1].pos)
+  line(points[1].pos, points[2].pos)
+  line(points[2].pos.x, points[2].pos.y, b.x, b.y)
 
   circfill(a.x,a.y,1)
   circfill(b.x,b.y,1)
