@@ -2,6 +2,8 @@ APPNAME=minisyn
 NIMC=nim
 DATE=$(shell date +%Y-%m-%d)
 
+SOURCES=src/main.nim
+
 minisynd: src/main.nim
 	nim c -d:debug --nimcache:nimcache/debug -p:../nico -o:$@ --threads:on -d:gif $<
 
@@ -34,4 +36,12 @@ linux: linux32 linux64
 	cd linux; \
 	tar czf ../${APPNAME}-${DATE}-linux.tar.gz .
 
-.PHONY: run rund
+windows:
+	${NIMC} c -p:../nico -d:release -d:windows --tlsEmulation:off --threads:on -o:winversion/${APPNAME}.exe src/main.nim
+	cp -r assets winversion
+	find winversion/assets/ -name '*.wav' -delete
+	rm ${APPNAME}-${DATE}-win32.zip || true
+	cd winversion; \
+	zip -r ../${APPNAME}-${DATE}-win32.zip .
+
+.PHONY: run rund windows linux linux64 linux32 osx

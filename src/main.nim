@@ -718,8 +718,8 @@ proc isPlatform(t: uint8): bool =
   else: false
 
 proc isTouchingType(x,y,w,h: int, check: proc(t: uint8): bool): bool =
-  #if x < startX or x + w > startX + 15 * 16 or y < startY or y >= startY + 8 * 16:
-  #  return check(255)
+  if x < startX - 16 or x + w > startX + 16 * 16 or y < startY or y >= startY + 8 * 16:
+    return check(255)
   for i in max((startX-1) div 16,(x div 16))..min(startX+16*16,(x+w-1) div 16):
     for j in max((startY-1) div 16,(y div 16))..min(startY+10*16,(y+h-1) div 16):
       let t = mget(i,j)
