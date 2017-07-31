@@ -196,7 +196,7 @@ proc newCable(a: Socket, b: Socket): Cable =
   result = new(Cable)
   result.a = a
   result.b = b
-  result.color = rnd([8,2,14])
+  result.color = 8
 
   let ap = vec2f(a.x.float, a.y.float)
   let bp = vec2f(b.x.float, b.y.float)
@@ -205,16 +205,14 @@ proc newCable(a: Socket, b: Socket): Cable =
     result.points[i].pos = lerp(ap,bp, (i+1).float / 5.0)
     result.points[i].vel = vec2f(0.0, 0.01)
 
-proc connect(insock: Socket, outsock: Socket, cable = true, cableColor: int = 8) =
+proc connect(insock: Socket, outsock: Socket, cable = true) =
   debug("connect", insock.obj.name, outsock.obj.name)
   if insock.obj == outsock.obj:
     return
   insock.connectedTo = outsock
   outsock.connectedTo = insock
   if cable:
-    var c = newCable(insock, outsock)
-    c.color = cableColor
-    cables.add(c)
+    cables.add(newCable(insock, outsock))
 
 proc disconnect(outsock: Socket) =
   debug("disconnect", outsock.obj.name)
@@ -843,34 +841,30 @@ method update(self: Player, dt: float) =
                 playSound(SFX_PLUGOUT, 1)
     else:
       # if we're holding a cable, connect it to something, or drop it
-      for obj in objects:
-        if obj of Box:
-          let ob = Box(obj)
-          if ob.distanceFromPlayer < 20.0:
-              # connect it to a socket
-              if player.connectedToInput == false and ob.inputSockets.len > 0:
-                var sourceSocket = self.socket.connectedTo
-                let s = if ob.inputSockets.len > 1 and btn(pcDown): ob.inputSockets[1] else: ob.inputSockets[0]
-                if s.connectedTo != nil:
-                  disconnect(s)
-                disconnect(sourceSocket, self.socket)
-                connect(sourceSocket, s)
-                for i in 0..(rnd(5)+1):
-                  particles.add(Particle(kind: sparkParticle, pos: vec2f(s.x.float, s.y.float), vel: rndVec(0.5), ttl: 0.5, maxttl: 0.5, above: true))
-                playSound(SFX_PLUGIN, 1)
-                break
-              # if you're trying to connect an input to an output...
-              if player.connectedToInput and ob.outputSockets.len > 0:
-                var targetSocket = self.socket.connectedTo
-                let s = if ob.outputSockets.len > 1 and btn(pcDown): ob.outputSockets[1] else: ob.outputSockets[0]
-                if s.connectedTo != nil:
-                  disconnect(s)
-                disconnect(self.socket)
-                connect(s, targetSocket)
-                for i in 0..(rnd(5)+1):
-                  particles.add(Particle(kind: sparkParticle, pos: vec2f(s.x.float, s.y.float), vel: rndVec(0.5), ttl: 0.5, maxttl: 0.5, above: true))
-                playSound(SFX_PLUGIN, 1)
-                break
+      if player.nearestBox != nil and player.nearestBoxDist < 20.0:
+        # connect it to a socket
+        let ob = player.nearestBox
+        if player.connectedToInput == false and player.x + player.hitbox.x + player.hitbox.w <= ob.x and ob.inputSockets.len > 0:
+          var sourceSocket = self.socket.connectedTo
+          let s = if ob.inputSockets.len > 1 and btn(pcDown): ob.inputSockets[1] else: ob.inputSockets[0]
+          if s.connectedTo != nil:
+            disconnect(s)
+          disconnect(sourceSocket, self.socket)
+          connect(sourceSocket, s)
+          for i in 0..(rnd(5)+1):
+            particles.add(Particle(kind: sparkParticle, pos: vec2f(s.x.float, s.y.float), vel: rndVec(0.5), ttl: 0.5, maxttl: 0.5, above: true))
+          playSound(SFX_PLUGIN, 1)
+        # if you're trying to connect an input to an output...
+        if player.connectedToInput and player.x + player.hitbox.x >= ob.x + ob.hitbox.w and ob.outputSockets.len > 0:
+          var targetSocket = self.socket.connectedTo
+          let s = if ob.outputSockets.len > 1 and btn(pcDown): ob.outputSockets[1] else: ob.outputSockets[0]
+          if s.connectedTo != nil:
+            disconnect(s)
+          disconnect(self.socket)
+          connect(s, targetSocket)
+          for i in 0..(rnd(5)+1):
+            particles.add(Particle(kind: sparkParticle, pos: vec2f(s.x.float, s.y.float), vel: rndVec(0.5), ttl: 0.5, maxttl: 0.5, above: true))
+          playSound(SFX_PLUGIN, 1)
       if self.socket.connectedTo != nil:
         disconnect(self.socket)
 
