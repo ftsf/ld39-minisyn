@@ -1531,11 +1531,12 @@ proc gameDraw() =
 
   block:
     let edge = (transitionIn * screenWidth.float).int
-    rectfill(edge + 1, 0, screenWidth + 1, screenHeight)
+    rectfill(edge, 0, screenWidth + 1, screenHeight)
     if transitionIn < 1.0:
       transitionIn += 0.02
 
-  rectfill(-1, -1, transitionOut * (screenWidth + 1).float, screenHeight)
+  if transitionOut > 0.0:
+    rectfill(0, 0, transitionOut * (screenWidth + 1).float, screenHeight)
 
   if gameComplete:
     setColor(0)
