@@ -1420,6 +1420,12 @@ proc gameUpdate(dt: float) =
           playSound(SFX_SOLVED,3)
         else:
           playSound(SFX_UNSOLVED,3)
+
+    else:
+      if timerem <= 0 and btnp(pcA):
+        timerem = 60 * 60 * 60
+        gameComplete = false
+        playSound(SFX_SOLVED,3)
     return
 
   for i in 0..<objects.len:
@@ -1612,6 +1618,7 @@ proc gameDraw() =
       if gameoverTimeout <= 0.0:
         setColor(15)
         printShadowC("ALL POWER HAS BEEN LOST FOREVER", screenWidth div 2, screenHeight div 2)
+        printShadowC("KEEP PLAYING ANYWAY?", screenWidth div 2, screenHeight div 2 + 30)
 
   if showMenu:
     setColor(if menuOption == 0: 15 else: 11)
